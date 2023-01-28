@@ -1,162 +1,213 @@
-use std::{error::Error, fs, io::Write, path::Path};
+use std::{
+    collections::HashMap,
+    ffi::OsStr,
+    fs::{self, File},
+    io::{BufReader, Write},
+    path::Path,
+};
 
-use liquid::{ParserBuilder, Template};
+use liquid::{model::ScalarCow, ObjectView, ParserBuilder, Template, ValueView};
+use log::error;
 use regex::Regex;
-use serde_json::Value;
 use walkdir::WalkDir;
 
-pub struct SingleOutputConfig<'a> {
-    template: &'a Template,
-    output_filename: &'a str,
-    data: &'a Value,
+pub mod errors;
+pub mod helpers;
+
+use crate::errors::PacdError;
+
+pub struct SiteGenerator {
+    src_path: String,
+    dest_path: String,
+    parser: liquid::Parser,
+    globals: HashMap<String, liquid::model::Value>,
+    coll_pattern: regex::Regex,
 }
 
-pub struct CollectionOutputConfig<'a> {
+impl SiteGenerator {
+    pub fn build<'a>(
+        src: &'a str,
+        dest: &'a str,
+        data: &'a str,
+    ) -> Result<SiteGenerator, PacdError> {
+        // create a parser
+        let parser = ParserBuilder::with_stdlib().build().map_err(|e| {
+            error!(target: "SiteGenerator::build", "Error building parser {e}");
+            PacdError::CouldNotBuildParser
+        })?;
+
+        // get the data bindings from file
+        let file = File::open(Path::new(data)).map_err(|e| {
+            error!(target: "SiteGenerator::build", "Error opening file {e}");
+            PacdError::DataParseError(data.to_string())
+        })?;
+        let rdr = BufReader::new(file);
+        let globals: HashMap<String, liquid::model::Value> =
+            serde_json::from_reader(rdr).map_err(|e| {
+                error!(target: "SiteGenerator::build", "Serde parse failed {e}");
+                PacdError::DataParseError(data.to_string())
+            })?;
+
+        // pattern for collection types
+        let coll_pattern =
+            Regex::new("^\\[(.*)\\]$").expect("Incorrect regex config. Contact library author.");
+
+        Ok(SiteGenerator {
+            src_path: src.to_string(),
+            dest_path: dest.to_string(),
+            parser,
+            globals,
+            coll_pattern,
+        })
+    }
+
+    pub fn generate(&mut self) -> Result<(), PacdError> {
+        for entry in WalkDir::new(&self.src_path) {
+            let entry = entry.map_err(|e| {
+                error!(target: "SiteGenerator::generate", "walk error {e}");
+                PacdError::TraverseError
+            })?;
+            let path = entry.path();
+            if path.is_file() {
+                // new file path
+                let output_path = Path::new(&self.dest_path).join(
+                    path.strip_prefix(&self.src_path)
+                        .map_err(|e| PacdError::PassThrough(Box::new(e)))?,
+                );
+
+                helpers::create_dir_for_path(&output_path)?;
+
+                let ext = path.extension().unwrap_or_else(|| OsStr::new(""));
+
+                if ext == "liquid" {
+                    self.transform_file(path, &output_path)?;
+                } else {
+                    fs::copy(path, &output_path).map_err(|e| {
+                        error!(target: "SiteGenerator::generate", "Copy error {e}");
+                        PacdError::DestCreationError(output_path.display().to_string())
+                    })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn transform_file(&mut self, input_path: &Path, output_path: &Path) -> Result<(), PacdError> {
+        let mut output_filename = output_path.display().to_string();
+
+        let template = self.parser.parse_file(input_path).map_err(|e| {
+            error!(target: "SiteGenerator::generate", "error parsing template {e}");
+            PacdError::CouldNotParseTemplate(input_path.display().to_string())
+        })?;
+
+        let coll_name = input_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| self.coll_pattern.captures(stem));
+
+        match coll_name {
+            Some(captures) => {
+                let config = CollectionOutputConfig {
+                    template: &template,
+                    output_path,
+                    collection_name: captures.get(1).unwrap().as_str(),
+                };
+                self.create_collection_output(&config)?;
+            }
+            None => {
+                output_filename.truncate(output_filename.len() - ".liquid".len());
+                output_filename.push_str(".html");
+                let config = SingleOutputConfig {
+                    template: &template,
+                    output_filename: &output_filename,
+                    locals: HashMap::new(),
+                };
+
+                println!("Creating file {}", &output_filename);
+                self.create_single_output(&config)?;
+            }
+        };
+        Ok(())
+    }
+
+    fn create_single_output(&self, config: &SingleOutputConfig) -> Result<(), PacdError> {
+        let globals = PageData {
+            data: &self.globals,
+            page: &config.locals,
+        };
+
+        let contents = config.template.render(&globals).map_err(|e| {
+            error!("Cannot render template {:?}", e);
+            PacdError::CouldNotRenderFile(config.output_filename.to_string())
+        })?;
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(config.output_filename)
+            .map_err(|e| {
+                error!("Cannot create output file {}: {e}", config.output_filename);
+                PacdError::DestCreationError(config.output_filename.to_string())
+            })?;
+
+        file.write_all(contents.as_bytes())
+            .map_err(|e| {
+                error!(target: "SiteGenerator::create_single_output", "writing output to file failed {e}");
+                PacdError::DestCreationError(config.output_filename.to_string())
+        })
+    }
+
+    fn create_collection_output(
+        &mut self,
+        config: &CollectionOutputConfig,
+    ) -> Result<(), PacdError> {
+        let key = config.collection_name;
+        let list = self
+            .globals
+            .get(key)
+            .ok_or(PacdError::CollectionKeyNotFound(key.to_string()))?
+            .as_view()
+            .as_array()
+            .ok_or(PacdError::NoListAvailable(key.to_string()))?;
+
+        for (idx, val) in list.values().enumerate() {
+            let id = helpers::get_id_string(val, key)?;
+            let new_filename = format!("{}.html", id);
+            let full_path = Path::new(config.output_path.parent().unwrap()).join(new_filename);
+            let output_filename = &full_path.display().to_string();
+
+            let mut locals = HashMap::new();
+            let val = ScalarCow::new(idx as u32).to_value();
+            locals.insert("current_index".to_string(), val);
+
+            let single_config = SingleOutputConfig {
+                template: config.template,
+                output_filename,
+                locals,
+            };
+
+            self.create_single_output(&single_config)?
+        }
+
+        Ok(())
+    }
+}
+
+struct SingleOutputConfig<'a> {
+    template: &'a Template,
+    output_filename: &'a str,
+    locals: HashMap<String, liquid::model::Value>,
+}
+
+struct CollectionOutputConfig<'a> {
     template: &'a Template,
     collection_name: &'a str,
     output_path: &'a Path,
-    data: &'a Value,
 }
 
-pub fn build_site(src_path: &str, dest_path: &str) -> Result<(), Box<dyn Error>> {
-    let re = Regex::new("^\\[(.*)\\]$").expect("Incorrect regex config");
-    let parser = ParserBuilder::with_stdlib().build().unwrap();
-    let v: Value = serde_json::from_str(
-        r#"{
-        "account": {
-            "name": "Ashwin"
-        },
-        "collection": [
-            { "name": "one", "id": "one" },
-            { "name": "two", "id": "two" }
-        ]
-    }"#,
-    )?;
-
-    for entry in WalkDir::new(src_path) {
-        let entry = entry.expect("Unable to traverse path");
-        let path = entry.path();
-        if path.is_file() {
-            // new file path
-            let output_path = Path::new(dest_path).join(path.strip_prefix(src_path)?);
-
-            create_dir_for_path(&output_path)?;
-
-            let mut output_filename = output_path.as_path().display().to_string();
-            println!("Creating new file {}", &output_filename);
-
-            let contents = match fs::read_to_string(path) {
-                Ok(s) => s,
-                Err(_) => return Err("Cannot open file".into()),
-            };
-
-            let ext = path.extension().unwrap_or_default();
-
-            if ext == "liquid" {
-                let template = match parser.parse(&contents) {
-                    Ok(t) => t,
-                    Err(_) => return Err("Unable to parse template".into()),
-                };
-
-                let coll_name = path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .and_then(|stem| re.captures(stem));
-
-                match coll_name {
-                    Some(captures) => {
-                        let config = CollectionOutputConfig {
-                            template: &template,
-                            output_path: output_path.as_path(),
-                            data: &v,
-                            collection_name: captures
-                                .get(1)
-                                .ok_or("Unable to find collection name")?
-                                .as_str(),
-                        };
-                        create_collection_output(&config)?;
-                    }
-                    None => {
-                        output_filename.truncate(output_filename.len() - ".liquid".len());
-                        output_filename.push_str(".html");
-                        let config = SingleOutputConfig {
-                            template: &template,
-                            output_filename: &output_filename,
-                            data: &v,
-                        };
-                        create_single_output(&config)?;
-                    }
-                };
-            }
-        }
-    }
-    Ok(())
-}
-
-fn create_dir_for_path(filepath: &Path) -> Result<(), Box<dyn Error>> {
-    if !filepath.parent().unwrap().exists() {
-        fs::create_dir_all(filepath.parent().unwrap())?;
-    }
-
-    Ok(())
-}
-
-fn create_single_output(config: &SingleOutputConfig) -> Result<(), Box<dyn Error>> {
-    let globals = liquid::to_object(config.data)?;
-    let contents = match config.template.render(&globals) {
-        Ok(contents) => contents,
-        Err(e) => return Err(Box::new(e.context("cause", "Attempt to render template"))),
-    };
-    let mut file = match fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(config.output_filename)
-    {
-        Ok(file) => file,
-        Err(e) => {
-            return Err(format!(
-                "cannot create output file '{}': {}",
-                config.output_filename, e
-            )
-            .into())
-        }
-    };
-    if file.write_all(contents.as_bytes()).is_err() {
-        return Err("unable to write to file".into());
-    }
-    Ok(())
-}
-
-fn create_collection_output(config: &CollectionOutputConfig) -> Result<(), Box<dyn Error>> {
-    let key = config.collection_name;
-    let list = config.data.get(key).ok_or("Collection key not found")?;
-    let list = list.as_array().ok_or("Unable to parse collection")?;
-
-    for val in list {
-        let id = val
-            .get("id")
-            .ok_or("Cannot find ID for collection")?
-            .as_str()
-            .ok_or("Cannot parse ID as string")?;
-        let new_filename = format!("{}.html", id);
-        let full_path = Path::new(config.output_path.parent().unwrap()).join(new_filename);
-        let output_filename = full_path.to_str().ok_or("Unable to create new path")?;
-
-        let mut val_config = config.data.clone();
-
-        val_config
-            .as_object_mut()
-            .ok_or("Invalid data")?
-            .insert(format!("{}_value", config.collection_name), val.clone());
-
-        let single_config = SingleOutputConfig {
-            template: config.template,
-            output_filename,
-            data: &val_config,
-        };
-
-        create_single_output(&single_config)?
-    }
-
-    Ok(())
+#[derive(Debug, ObjectView, ValueView)]
+struct PageData<'a> {
+    data: &'a HashMap<String, liquid::model::Value>,
+    page: &'a HashMap<String, liquid::model::Value>,
 }
