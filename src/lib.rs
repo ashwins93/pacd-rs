@@ -124,7 +124,6 @@ impl SiteGenerator {
                     locals: HashMap::new(),
                 };
 
-                println!("Creating file {}", &output_filename);
                 self.create_single_output(&config)?;
             }
         };
@@ -141,6 +140,7 @@ impl SiteGenerator {
             error!("Cannot render template {:?}", e);
             PacdError::CouldNotRenderFile(config.output_filename.to_string())
         })?;
+        println!("Creating file {}", config.output_filename);
 
         let mut file = fs::OpenOptions::new()
             .write(true)
