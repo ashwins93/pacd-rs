@@ -26,9 +26,9 @@ pub struct SiteGenerator {
 
 impl SiteGenerator {
     pub fn build<'a>(
-        src: &'a str,
-        dest: &'a str,
-        data: &'a str,
+        src: &'a Path,
+        dest: &'a Path,
+        data: &'a Path,
     ) -> Result<SiteGenerator, PacdError> {
         // create a parser
         let parser = ParserBuilder::with_stdlib().build().map_err(|e| {
@@ -39,13 +39,13 @@ impl SiteGenerator {
         // get the data bindings from file
         let file = File::open(Path::new(data)).map_err(|e| {
             error!(target: "SiteGenerator::build", "Error opening file {e}");
-            PacdError::DataParseError(data.to_string())
+            PacdError::DataParseError(data.display().to_string())
         })?;
         let rdr = BufReader::new(file);
         let globals: HashMap<String, liquid::model::Value> =
             serde_json::from_reader(rdr).map_err(|e| {
                 error!(target: "SiteGenerator::build", "Serde parse failed {e}");
-                PacdError::DataParseError(data.to_string())
+                PacdError::DataParseError(data.display().to_string())
             })?;
 
         // pattern for collection types
@@ -53,8 +53,8 @@ impl SiteGenerator {
             Regex::new("^\\[(.*)\\]$").expect("Incorrect regex config. Contact library author.");
 
         Ok(SiteGenerator {
-            src_path: src.to_string(),
-            dest_path: dest.to_string(),
+            src_path: src.display().to_string(),
+            dest_path: dest.display().to_string(),
             parser,
             globals,
             coll_pattern,
