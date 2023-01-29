@@ -23,7 +23,7 @@ cargo install --path .
 
 ## Usage
 
-```sh
+```
 Usage: pacd [OPTIONS] <SITE_DIR>
 
 Arguments:
