@@ -173,7 +173,7 @@ impl SiteGenerator {
 
         for (idx, val) in list.values().enumerate() {
             let id = helpers::get_id_string(val, key)?;
-            let new_filename = format!("{}.html", id);
+            let new_filename = format!("{id}.html");
             let full_path = Path::new(config.output_path.parent().unwrap()).join(new_filename);
             let output_filename = &full_path.display().to_string();
 
