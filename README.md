@@ -8,6 +8,8 @@ A static site generator based on shopify liquid.
 
 You need `cargo` available on your `$PATH`. If you don't have Rust and Cargo you can install both with [`rustup`](https://www.rust-lang.org/tools/install)
 
+### Option 1: Clone and Install (Recommended)
+
 1. Clone this repository
 
 ```sh
@@ -20,6 +22,10 @@ git clone git@github.com:ashwins93/pacd-rs.git
 cd pacd-rs
 cargo install --path .
 ```
+
+### Option 2: Download release binaries
+
+Download release binaries from [Releases](https://github.com/ashwins93/pacd-rs/releases) for your platform.
 
 ## Usage
 
