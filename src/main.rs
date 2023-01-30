@@ -8,6 +8,7 @@ use pacd::SiteGenerator;
 
 /// A static site generator based on shopify liquid
 #[derive(Debug, Parser, Clone)]
+#[command(version, author, about, long_about = None)]
 struct CliArgs {
     /// The path for output
     #[arg(short, long, default_value = "./build")]

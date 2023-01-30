@@ -30,6 +30,10 @@ Download release binaries from [Releases](https://github.com/ashwins93/pacd-rs/r
 ## Usage
 
 ```
+$ pacd --help
+
+A static site generator based on shopify liquid
+
 Usage: pacd [OPTIONS] <SITE_DIR>
 
 Arguments:
@@ -40,6 +44,7 @@ Options:
   -d, --data-path <DATA_PATH>    Path to the JSON data [default: ./data.json]
   -w, --watch                    Watch for directory changes
   -h, --help                     Print help
+  -V, --version                  Print version
 ```
 
 ## Disclaimer

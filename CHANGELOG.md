@@ -1,3 +1,9 @@
+# v0.2.1-alpha
+
+## Fixes
+
+- Fixed CLI crashing on template errors
+
 # v0.2.0 Alpha
 
 ## Features
