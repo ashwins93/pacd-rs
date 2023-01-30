@@ -32,9 +32,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if args.watch {
         println!("Watching for file changes in {}", args.site_dir.display());
-        SiteGenerator::build(&args.site_dir, &args.output_dir, &args.data_path)?.generate()?;
+        match SiteGenerator::build(&args.site_dir, &args.output_dir, &args.data_path)
+            .and_then(|mut s| s.generate())
+        {
+            Ok(_) => println!("Build successful"),
+            Err(e) => {
+                error!("Build failed: {:#?}", e);
+            }
+        }
         watch_changes(&args.site_dir, || {
-            SiteGenerator::build(&args.site_dir, &args.output_dir, &args.data_path)?.generate()?;
+            match SiteGenerator::build(&args.site_dir, &args.output_dir, &args.data_path)
+                .and_then(|mut s| s.generate())
+            {
+                Ok(_) => println!("Build successful"),
+                Err(e) => {
+                    error!("Build failed: {:#?}", e);
+                }
+            }
             Ok(())
         })?;
     } else {
