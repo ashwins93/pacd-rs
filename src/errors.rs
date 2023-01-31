@@ -27,8 +27,19 @@ pub enum PacdError {
     TraverseError,
     #[error("Cannot create destination file/directory {0}. Check your permissions")]
     DestCreationError(String),
-    #[error("Error reading contenst of the file {0}. Check your permissions")]
+    #[error("Error reading contents of the file {0}. Check your permissions")]
     SrcReadError(String),
+    #[error("Error unpacking archive to {0}")]
+    DeflateError(String),
     #[error("Something went wrong {0}")]
     PassThrough(Box<dyn std::error::Error>),
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum PackerError {
+    #[error("Cannot create file {0}")]
+    CouldNotCreateFile(String),
+    #[error("Cannot write to file {0}")]
+    CouldNotWriteToFile(String),
 }
