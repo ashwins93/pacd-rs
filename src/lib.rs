@@ -7,29 +7,33 @@ use std::{
 };
 
 use liquid::{model::ScalarCow, ObjectView, ParserBuilder, Template, ValueView};
-use log::error;
+use log::{debug, error};
 use regex::Regex;
+use tempfile::TempDir;
 use walkdir::WalkDir;
 
+pub mod config;
 pub mod errors;
 pub mod helpers;
+pub mod packer;
 
-use crate::errors::PacdError;
+pub use crate::config::Config;
+pub use crate::errors::PacdError;
 
-pub struct SiteGenerator {
-    src_path: String,
-    dest_path: String,
+pub struct SiteGenerator<'a> {
+    src_path: &'a Path,
+    dest_path: &'a Path,
     parser: liquid::Parser,
     globals: HashMap<String, liquid::model::Value>,
     coll_pattern: regex::Regex,
 }
 
-impl SiteGenerator {
-    pub fn build<'a>(
-        src: &'a Path,
-        dest: &'a Path,
-        data: &'a Path,
-    ) -> Result<SiteGenerator, PacdError> {
+impl SiteGenerator<'_> {
+    pub fn build(config: Config) -> Result<SiteGenerator, PacdError> {
+        let data = config.data_path;
+        let src = config.src_path;
+        let dest = config.dest_path;
+
         // create a parser
         let parser = ParserBuilder::with_stdlib().build().map_err(|e| {
             error!(target: "SiteGenerator::build", "Error building parser {e}");
@@ -53,8 +57,8 @@ impl SiteGenerator {
             Regex::new("^\\[(.*)\\]$").expect("Incorrect regex config. Contact library author.");
 
         Ok(SiteGenerator {
-            src_path: src.display().to_string(),
-            dest_path: dest.display().to_string(),
+            src_path: src,
+            dest_path: dest,
             parser,
             globals,
             coll_pattern,
@@ -62,39 +66,60 @@ impl SiteGenerator {
     }
 
     pub fn generate(&mut self) -> Result<(), PacdError> {
-        for entry in WalkDir::new(&self.src_path) {
+        let ext = self.src_path.extension().unwrap_or(OsStr::new(""));
+        debug!(target: "SiteGenerator::generate", "Extension: {ext:?}");
+
+        let tmpdir: TempDir;
+        let mut src_path = self.src_path;
+
+        if ext == "tar" || ext == "gz" {
+            tmpdir = tempfile::tempdir().map_err(|e| {
+                error!(target: "SiteGenerator::generate", "Error creating temp dir {e}");
+                PacdError::DeflateError(self.src_path.display().to_string())
+            })?;
+            src_path = tmpdir.path();
+
+            helpers::unpack_archive(self.src_path, src_path)?;
+        }
+
+        for entry in WalkDir::new(src_path) {
             let entry = entry.map_err(|e| {
                 error!(target: "SiteGenerator::generate", "walk error {e}");
                 PacdError::TraverseError
             })?;
             let path = entry.path();
+            debug!(target: "SiteGenerator::generate", "Processing path {path}", path = path.display());
             if path.is_file() {
-                // new file path
-                let output_path = Path::new(&self.dest_path).join(
-                    path.strip_prefix(&self.src_path)
-                        .map_err(|e| PacdError::PassThrough(Box::new(e)))?,
-                );
-
-                helpers::create_dir_for_path(&output_path)?;
-
-                let ext = path.extension().unwrap_or_else(|| OsStr::new(""));
-
-                if ext == "liquid" {
-                    self.transform_file(path, &output_path)?;
-                } else {
-                    fs::copy(path, &output_path).map_err(|e| {
-                        error!(target: "SiteGenerator::generate", "Copy error {e}");
-                        PacdError::DestCreationError(output_path.display().to_string())
-                    })?;
-                }
+                let output_path =
+                    Path::new(&self.dest_path).join(path.strip_prefix(src_path).unwrap_or(path));
+                self.build_file(path, &output_path)?;
             }
         }
 
         Ok(())
     }
 
+    fn build_file(&mut self, src_path: &Path, output_path: &Path) -> Result<(), PacdError> {
+        debug!(target: "SiteGenerator::prep_src_file", "Processing file {path}", path = src_path.display());
+        // new file path
+
+        helpers::create_dir_for_path(output_path)?;
+
+        let ext = src_path.extension().unwrap_or_else(|| OsStr::new(""));
+
+        if ext == "liquid" {
+            self.transform_file(src_path, output_path)?;
+        } else {
+            fs::copy(src_path, output_path).map_err(|e| {
+                error!(target: "SiteGenerator::prep_src_file", "Copy error {e}");
+                PacdError::DestCreationError(output_path.display().to_string())
+            })?;
+        }
+        Ok(())
+    }
+
     fn transform_file(&mut self, input_path: &Path, output_path: &Path) -> Result<(), PacdError> {
-        let mut output_filename = output_path.display().to_string();
+        let output_filename = output_path.display().to_string();
 
         let template = self.parser.parse_file(input_path).map_err(|e| {
             error!(target: "SiteGenerator::generate", "error parsing template {e}");
@@ -116,8 +141,7 @@ impl SiteGenerator {
                 self.create_collection_output(&config)?;
             }
             None => {
-                output_filename.truncate(output_filename.len() - ".liquid".len());
-                output_filename.push_str(".html");
+                let output_filename = Path::new(&output_filename).with_extension("html");
                 let config = SingleOutputConfig {
                     template: &template,
                     output_filename: &output_filename,
@@ -138,23 +162,26 @@ impl SiteGenerator {
 
         let contents = config.template.render(&globals).map_err(|e| {
             error!("Cannot render template {:?}", e);
-            PacdError::CouldNotRenderFile(config.output_filename.to_string())
+            PacdError::CouldNotRenderFile(config.output_filename.display().to_string())
         })?;
-        println!("Creating file {}", config.output_filename);
+        println!("Creating file {}", config.output_filename.display());
 
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open(config.output_filename)
             .map_err(|e| {
-                error!("Cannot create output file {}: {e}", config.output_filename);
-                PacdError::DestCreationError(config.output_filename.to_string())
+                error!(
+                    "Cannot create output file {}: {e}",
+                    config.output_filename.display()
+                );
+                PacdError::DestCreationError(config.output_filename.display().to_string())
             })?;
 
         file.write_all(contents.as_bytes())
             .map_err(|e| {
                 error!(target: "SiteGenerator::create_single_output", "writing output to file failed {e}");
-                PacdError::DestCreationError(config.output_filename.to_string())
+                PacdError::DestCreationError(config.output_filename.display().to_string())
         })
     }
 
@@ -175,7 +202,6 @@ impl SiteGenerator {
             let id = helpers::get_id_string(val, key)?;
             let new_filename = format!("{id}.html");
             let full_path = Path::new(config.output_path.parent().unwrap()).join(new_filename);
-            let output_filename = &full_path.display().to_string();
 
             let mut locals = HashMap::new();
             let val = ScalarCow::new(idx as u32).to_value();
@@ -183,7 +209,7 @@ impl SiteGenerator {
 
             let single_config = SingleOutputConfig {
                 template: config.template,
-                output_filename,
+                output_filename: &full_path,
                 locals,
             };
 
@@ -196,7 +222,7 @@ impl SiteGenerator {
 
 struct SingleOutputConfig<'a> {
     template: &'a Template,
-    output_filename: &'a str,
+    output_filename: &'a Path,
     locals: HashMap<String, liquid::model::Value>,
 }
 
