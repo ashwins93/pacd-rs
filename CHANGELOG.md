@@ -1,3 +1,11 @@
+# v0.3.0-alpha
+
+## Features
+
+- Optionally accept tar and tar.gz files as input.
+- New CLI commands - `pacd build` and `pacd pack`.
+- Create `tar.gz` archives with the pack command.
+
 # v0.2.1-alpha
 
 ## Fixes
