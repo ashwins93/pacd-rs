@@ -1,0 +1,10 @@
+{
+  "account": {
+    "name": "Acme Inc"
+  },
+  "collection": [
+    { "name": "one", "id": "one" },
+    { "name": "two", "id": "two" },
+    { "name": "three", "id": "three" }
+  ]
+}
