@@ -9,8 +9,10 @@ use pacd::{
     Config, SiteGenerator,
 };
 
+/// A static site generator based on shopify liquid
 #[derive(Parser, Debug, Clone)]
 #[command(name = "pacd")]
+#[command(version, author, about, long_about = None)]
 enum PacdCli {
     #[command(name = "build")]
     Builder(BuildArgs),
@@ -18,9 +20,8 @@ enum PacdCli {
     Packer(PackerArgs),
 }
 
-/// A static site generator based on shopify liquid
+/// Build your site from liquid templates
 #[derive(Debug, Args, Clone)]
-#[command(version, author, about, long_about = None)]
 struct BuildArgs {
     /// The path for output
     #[arg(short, long, default_value = "./build")]
@@ -40,7 +41,6 @@ struct BuildArgs {
 
 /// Pack your template files into an archive
 #[derive(Debug, Args, Clone)]
-#[command(version, author, about, long_about = None)]
 struct PackerArgs {
     /// The path for output
     #[arg(short, long, default_value = "./build.tar.gz")]
