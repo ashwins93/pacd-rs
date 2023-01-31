@@ -95,7 +95,7 @@ Options:
   -h, --help                     Print help
 ```
 
-### `pacd pack`
+## `pacd pack`
 
 ```
 Pack your template files into an archive
